@@ -13,10 +13,15 @@ jobs:
     steps:
     - name: Enable RDP + Create BeeCZ user
       run: |
-        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
-        netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
         net user BeeCZ Bee123!! /add
         net localgroup administrators BeeCZ /add
+
+    - name: Enable Remote Desktop Services
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-Service -Name TermService -StartupType Automatic
+        Start-Service -Name TermService
 
     - name: Install Tailscale
       run: |
