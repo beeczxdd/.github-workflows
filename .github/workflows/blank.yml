@@ -1,4 +1,4 @@
-name: Infinite Windows RDP (BeeCZ)
+name: Infinite Windows RDP (BeeCZ + Ngrok)
 
 on:
   workflow_dispatch:
@@ -15,30 +15,22 @@ jobs:
       run: |
         net user BeeCZ Bee123!! /add
         net localgroup administrators BeeCZ /add
-
-    - name: Enable Remote Desktop Services
-      run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         Set-Service -Name TermService -StartupType Automatic
         Start-Service -Name TermService
 
-    - name: Install Tailscale
+    - name: Download & Setup Ngrok
       run: |
-        Invoke-WebRequest https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile tailscale.exe
-        Start-Process .\tailscale.exe -ArgumentList "/quiet" -Wait
+        Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
+        Expand-Archive ngrok.zip -DestinationPath .
+        .\ngrok.exe authtoken 30ohlOfgXzLIK3qyF3zX0OWUX9E_2Vz5BaGjNd1XvG1Sn4sUF
+        Start-Process -NoNewWindow .\ngrok.exe -ArgumentList "tcp 3389"
 
-    - name: Start Tailscale
+    - name: Show Ngrok Tunnel Info
       run: |
-        cd $env:ProgramFiles\Tailscale
-        .\tailscale.exe up --authkey=tskey-auth-kk83Xy29Gu11CNTRL-tKKqPUjhwv7WN1QajSsXv7GXE96BuwHWU --hostname=BeeCZ-RDP
-        echo "===================================="
-        echo "✅ RDP ready!"
-        echo "🔑 Username: BeeCZ"
-        echo "🔒 Password: Bee123!!"
-        echo "Check the Tailscale IP above ☝"
-        echo "===================================="
-        .\tailscale.exe ip -4
+        Start-Sleep -Seconds 10
+        Invoke-WebRequest http://127.0.0.1:4040/api/tunnels | Select-Object -Expand Content
 
     - name: Keep Alive
       run: |
