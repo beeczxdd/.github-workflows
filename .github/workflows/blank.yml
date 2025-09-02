@@ -8,15 +8,15 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 720
+    timeout-minutes: 360
 
     steps:
     - name: Enable RDP + Create BeeCZ user
       run: |
-        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f || exit 0
-        netsh advfirewall firewall set rule group="remote desktop" new enable=Yes || exit 0
-        net user BeeCZ "" /add || exit 0
-        net localgroup administrators BeeCZ /add || exit 0
+        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+        netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+        net user BeeCZ Bee123!! /add
+        net localgroup administrators BeeCZ /add
 
     - name: Install Tailscale
       run: |
@@ -29,7 +29,7 @@ jobs:
         echo "===================================="
         echo "✅ RDP ready!"
         echo "🔑 Username: BeeCZ"
-        echo "🔒 Password: (leave empty, just press Enter)"
+        echo "🔒 Password: Bee123!!"
         echo "Check the Tailscale IP above ☝"
         echo "===================================="
         ipconfig
