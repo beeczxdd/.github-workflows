@@ -1,0 +1,34 @@
+name: Infinite Windows RDP (BeeCZ)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"   # reruns every 6 hours automatically
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+    - name: Enable RDP
+      run: |
+        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+        netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+        # Rename user
+        wmic useraccount where name='runneradmin' rename BeeCZ
+
+    - name: Install Tailscale
+      run: |
+        Invoke-WebRequest https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile tailscale.exe
+        Start-Process .\tailscale.exe -ArgumentList "/quiet" -Wait
+
+    - name: Start Tailscale
+      run: |
+        tailscale up --authkey=tskey-auth-kk83Xy29Gu11CNTRL-tKKqPUjhwv7WN1QajSsXv7GXE96BuwHWU --hostname=BeeCZ-RDP
+        ipconfig
+
+    - name: Keep Alive
+      run: |
+        echo "RDP ready. Connect with user 'BeeCZ' (no password)."
+        ping -t 127.0.0.1 >nul
