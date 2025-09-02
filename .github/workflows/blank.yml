@@ -25,14 +25,15 @@ jobs:
 
     - name: Start Tailscale
       run: |
-        tailscale up --authkey=tskey-auth-kk83Xy29Gu11CNTRL-tKKqPUjhwv7WN1QajSsXv7GXE96BuwHWU --hostname=BeeCZ-RDP
+        cd $env:ProgramFiles\Tailscale
+        .\tailscale.exe up --authkey=tskey-auth-kk83Xy29Gu11CNTRL-tKKqPUjhwv7WN1QajSsXv7GXE96BuwHWU --hostname=BeeCZ-RDP
         echo "===================================="
         echo "✅ RDP ready!"
         echo "🔑 Username: BeeCZ"
         echo "🔒 Password: Bee123!!"
         echo "Check the Tailscale IP above ☝"
         echo "===================================="
-        ipconfig
+        .\tailscale.exe ip -4
 
     - name: Keep Alive
       run: |
