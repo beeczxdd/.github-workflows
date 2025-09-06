@@ -1,64 +1,38 @@
-name: Linux SSH (ngrok, 6h)
+name: Direct SSH (GitHub Debug)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */6 * * *"   # auto-rerun every 6 hours
 
 jobs:
-  sshbox:
+  ssh:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360  # 6 hours max
 
     steps:
-    - name: Prep user + OpenSSH
+    - name: Install tmate
       run: |
-        set -eux
-        # Create user (idempotent), add to sudo
-        sudo useradd -m -s /bin/bash BeeCZ || true
-        echo 'BeeCZ:Bee123!!' | sudo chpasswd
-        sudo usermod -aG sudo BeeCZ
-
-        # Install ssh server
         sudo apt-get update
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server curl unzip
+        sudo apt-get install -y tmate openssh-client
 
-        # Ensure host keys exist
-        sudo ssh-keygen -A
-
-        # Harden + allow password auth for this ephemeral box
-        sudo mkdir -p /etc/ssh/sshd_config.d
-        cat <<'CONF' | sudo tee /etc/ssh/sshd_config.d/99-actions.conf >/dev/null
-PasswordAuthentication yes
-ChallengeResponseAuthentication no
-UsePAM yes
-PermitRootLogin no
-AllowUsers BeeCZ
-# keep defaults for everything else
-CONF
-
-        # Make sure sshd listens on 22
-        sudo sed -i 's/^#\?Port .*/Port 22/' /etc/ssh/sshd_config || true
-
-        # Start/restart the service (systemd or sysv)
-        (sudo systemctl enable --now ssh) || true
-        (sudo systemctl restart ssh) || (sudo service ssh restart) || true
-
-        # Verify it’s actually listening
-        sleep 2
-        ss -ltnp | grep -E ':22\s' || (echo "❌ SSH not listening on 22" && exit 1)
-        echo "✅ SSH is up on port 22"
-
-    - name: Download & configure ngrok
+    - name: Start SSH session
       run: |
-        set -eux
-        curl -fsSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-amd64.zip -o ngrok.zip
-        unzip -q ngrok.zip
-        chmod +x ngrok
-        # your token as requested (hardcoded)
-        ./ngrok config add-authtoken 30ohlOfgXzLIK3qyF3zX0OWUX9E_2Vz5BaGjNd1XvG1Sn4sUF
+        echo "🔹 Starting SSH session..."
+        # Start a tmate session
+        tmate -F -v -a > tmate.log 2>&1 &
 
-    - name: Start ngrok TCP 22 and fetch public address
+        # Wait for session to start and provide the SSH command
+        sleep 5
+        cat tmate.log
+
+        echo "========================================="
+        echo "💻 Copy the SSH command below to connect:"
+        echo ""
+        grep -Eo 'ssh .+' tmate.log | head -n 1
+        echo ""
+        echo "========================================="
+
+        # Keep workflow alive for 6 hours
+        sleep 21600
       run: |
         set -eux
         # Start ngrok in background, log to file (v3 syntax compatible)
