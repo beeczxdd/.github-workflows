@@ -1,4 +1,4 @@
-name: Windows RDP (BeeCZ + Ngrok, 6h HARDENED)
+name: Windows RDP (BeeCZ + Ngrok, 6h HARDENED++)
 
 on:
   workflow_dispatch:
@@ -11,33 +11,54 @@ jobs:
     timeout-minutes: 360
 
     steps:
-    - name: Enable RDP + Create user (with verification)
+    - name: Enable RDP + Create user + force listener
       shell: pwsh
       run: |
         $user = "BeeCZ"
         $pass = "Bee123!!"
+
+        # Create admin user (idempotent)
         try { net user $user $pass /add } catch {}
         try { net localgroup administrators $user /add } catch {}
 
-        # Enable RDP + disable NLA
+        # Core switches to allow RDP
+        New-Item -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Force | Out-Null
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-        New-Item -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Force | Out-Null
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
 
-        # Firewall + service
+        # Ensure RDP-Tcp key exists and is configured properly
+        $rdpKey = 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+        New-Item -Path $rdpKey -Force | Out-Null
+        # Disable NLA
+        New-ItemProperty -Path $rdpKey -Name "UserAuthentication" -PropertyType DWord -Value 0 -Force | Out-Null
+        # Standard security layer
+        New-ItemProperty -Path $rdpKey -Name "SecurityLayer" -PropertyType DWord -Value 1 -Force | Out-Null
+        # Set port to 3389
+        New-ItemProperty -Path $rdpKey -Name "PortNumber" -PropertyType DWord -Value 3389 -Force | Out-Null
+
+        # Open firewall (both rule group + explicit port rule)
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
-        Set-Service -Name TermService -StartupType Automatic
-        Start-Service -Name TermService
+        netsh advfirewall firewall add rule name="Allow RDP 3389" dir=in action=allow protocol=TCP localport=3389 | Out-Null
 
-        # Wait until 3389 is actually listening
+        # Start/Restart Remote Desktop Services
+        Set-Service -Name TermService -StartupType Automatic
+        try { Restart-Service -Name TermService -Force } catch { Start-Service -Name TermService }
+
+        # Verify 3389 is listening (retry up to 2 min)
         Write-Host "⏳ Waiting for RDP to listen on 3389..."
-        $ok=$false
-        for ($i=0;$i -lt 60;$i++){
-          if (Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -InformationLevel Quiet){ $ok=$true; break }
+        $ok = $false
+        for ($i=0; $i -lt 60; $i++) {
           Start-Sleep -Seconds 2
+          if (Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -InformationLevel Quiet) { $ok = $true; break }
+          # Poke service just in case
+          try { Restart-Service -Name TermService -ErrorAction SilentlyContinue } catch {}
         }
-        if (-not $ok){ Write-Error "RDP (3389) not listening"; exit 1 }
-        Write-Host "✅ RDP is listening."
+        if (-not $ok) {
+          Write-Host "❌ RDP (3389) not listening. Dumping service + netstat info:"
+          Get-Service TermService
+          netstat -ano | findstr /c:":3389" || $true
+          exit 1
+        }
+        Write-Host "✅ RDP is listening on 3389."
 
     - name: Download & setup ngrok (v3)
       shell: pwsh
@@ -46,12 +67,11 @@ jobs:
         Expand-Archive ngrok.zip -DestinationPath .
         .\ngrok.exe config add-authtoken 30ohlOfgXzLIK3qyF3zX0OWUX9E_2Vz5BaGjNd1XvG1Sn4sUF
 
-    - name: Start ngrok TCP 3389 (background) + extract URL from logs
+    - name: Start ngrok TCP 3389 (background) + extract URL
       shell: pwsh
       run: |
         $log = "ngrok.log"
         if (Test-Path $log) { Remove-Item $log -Force }
-        # Start ngrok and stream logs to file
         Start-Process -FilePath .\ngrok.exe -ArgumentList 'tcp 3389 --log=stdout --log-format=logfmt' -NoNewWindow -RedirectStandardOutput $log
 
         # Wait up to 90s for tcp URL in logs
@@ -61,7 +81,7 @@ jobs:
           if (Test-Path $log) {
             $line = Select-String -Path $log -Pattern 'url=tcp://[^\s"]+' -SimpleMatch:$false | Select-Object -Last 1
             if ($line) {
-              $m = [regex]::Match($line.ToString(), 'url=(tcp://[^\s"]+)')
+              $m = [regex]::Match($line.Line, 'url=(tcp://[^\s"]+)')
               if ($m.Success) { $url = $m.Groups[1].Value; break }
             }
           }
@@ -82,7 +102,6 @@ jobs:
         Write-Host "🔒 Password : Bee123!!"
         Write-Host "====================================="
 
-        # Nice summary box in Actions UI
         "`n## ✅ RDP Tunnel
         **Host:** $host  
         **Port:** $port  
