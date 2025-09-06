@@ -1,4 +1,4 @@
-name: Linux Desktop (XFCE + noVNC via ngrok, 6h STABLE)
+name: Linux SSH (ngrok, 6h)
 
 on:
   workflow_dispatch:
@@ -6,137 +6,93 @@ on:
     - cron: "0 */6 * * *"   # auto-rerun every 6 hours
 
 jobs:
-  desktop:
+  sshbox:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-    - name: Install XFCE, TigerVNC, noVNC deps
+    - name: Prep user + OpenSSH
       run: |
+        set -eux
+        # Create user (idempotent), add to sudo
+        sudo useradd -m -s /bin/bash BeeCZ || true
+        echo 'BeeCZ:Bee123!!' | sudo chpasswd
+        sudo usermod -aG sudo BeeCZ
+
+        # Install ssh server
         sudo apt-get update
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-          xfce4 xfce4-goodies xfce4-session xfce4-terminal dbus-x11 x11-xserver-utils \
-          tigervnc-standalone-server tigervnc-common novnc websockify curl unzip
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server curl unzip
 
-    - name: Configure VNC (password + xstartup)
-      env:
-        VNC_PASS: "Bee123!!"
-      run: |
-        mkdir -p ~/.vnc
-        # VNC password
-        echo -n "${VNC_PASS}" | vncpasswd -f > ~/.vnc/passwd
-        chmod 600 ~/.vnc/passwd
+        # Ensure host keys exist
+        sudo ssh-keygen -A
 
-        # Silence xrdb warning and prep X resources
-        touch ~/.Xresources
+        # Harden + allow password auth for this ephemeral box
+        sudo mkdir -p /etc/ssh/sshd_config.d
+        cat <<'CONF' | sudo tee /etc/ssh/sshd_config.d/99-actions.conf >/dev/null
+PasswordAuthentication yes
+ChallengeResponseAuthentication no
+UsePAM yes
+PermitRootLogin no
+AllowUsers BeeCZ
+# keep defaults for everything else
+CONF
 
-        # Robust XFCE xstartup (dbus + startxfce4)
-        cat > ~/.vnc/xstartup << 'EOF'
-        #!/bin/sh
-        unset SESSION_MANAGER
-        unset DBUS_SESSION_BUS_ADDRESS
-        export XDG_RUNTIME_DIR="$HOME/.xdg-runtime"
-        mkdir -p "$XDG_RUNTIME_DIR"
-        # Load X resources if present
-        [ -r "$HOME/.Xresources" ] && xrdb "$HOME/.Xresources"
-        # Start a user dbus if not running
-        if [ -z "$(pgrep -u "$USER" dbus-daemon)" ]; then
-          eval "$(dbus-launch --sh-syntax)"
-        fi
-        # Start XFCE
-        startxfce4 &
-        EOF
-        chmod +x ~/.vnc/xstartup
+        # Make sure sshd listens on 22
+        sudo sed -i 's/^#\?Port .*/Port 22/' /etc/ssh/sshd_config || true
 
-    - name: Start VNC server (:1 -> 5901) and verify
-      run: |
-        vncserver -kill :1 || true
-        # Start VNC bound to localhost; no TLS, VNC auth only
-        vncserver :1 -geometry 1366x768 -localhost yes -SecurityTypes VncAuth
+        # Start/restart the service (systemd or sysv)
+        (sudo systemctl enable --now ssh) || true
+        (sudo systemctl restart ssh) || (sudo service ssh restart) || true
+
+        # Verify it’s actually listening
         sleep 2
-        # Show VNC log tail for debugging
-        LOG="$(ls -1t ~/.vnc/*.log | head -n1 || true)"
-        echo "=== VNC LOG: $LOG ==="
-        [ -n "$LOG" ] && tail -n 200 "$LOG" || true
-        # Verify listening on 5901
-        ss -ltnp | (grep -E ":5901\s" || (echo "VNC not listening on 5901" && exit 1))
-
-    - name: Start noVNC (6080 proxy to 5901) and verify
-      run: |
-        NOVNC=/usr/share/novnc/utils/novnc_proxy
-        [ -x "$NOVNC" ] || (echo "noVNC launcher not found at $NOVNC" && exit 1)
-        $NOVNC --vnc localhost:5901 --listen 6080 > novnc.log 2>&1 &
-        for i in {1..30}; do ss -ltn | grep -q ":6080 " && break || sleep 1; done
-        ss -ltn | (grep -E ":6080\s" || (echo "noVNC not listening on 6080" && exit 1))
+        ss -ltnp | grep -E ':22\s' || (echo "❌ SSH not listening on 22" && exit 1)
+        echo "✅ SSH is up on port 22"
 
     - name: Download & configure ngrok
       run: |
+        set -eux
         curl -fsSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-amd64.zip -o ngrok.zip
         unzip -q ngrok.zip
         chmod +x ngrok
+        # your token as requested (hardcoded)
         ./ngrok config add-authtoken 30ohlOfgXzLIK3qyF3zX0OWUX9E_2Vz5BaGjNd1XvG1Sn4sUF
 
-    - name: Start ngrok (HTTP tunnel → 6080) and fetch URL
+    - name: Start ngrok TCP 22 and fetch public address
       run: |
-        ./ngrok http 6080 --log=stdout --log-format=logfmt > ngrok.log 2>&1 &
+        set -eux
+        # Start ngrok in background, log to file (v3 syntax compatible)
+        ./ngrok tcp 22 --log=stdout --log-format=logfmt > ngrok.log 2>&1 &
+        # wait up to 90s for a tcp URL to appear
         URL=""
-        for i in {1..90}; do
+        for i in $(seq 1 90); do
           sleep 1
-          URL=$(grep -oE 'url=https://[^ ]+' ngrok.log | tail -n1 | sed 's/url=//')
-          [ -n "$URL" ] && break
+          URL=$(grep -oE 'url=tcp://[^ ]+' ngrok.log | tail -n1 | sed 's/url=//')
+          [ -n "$URL" ] && break || true
         done
         if [ -z "$URL" ]; then
           echo "❌ Failed to obtain ngrok URL. Last logs:" && tail -n 200 ngrok.log
           exit 1
         fi
-        echo "===================================="
-        echo "✅ noVNC URL : $URL"
-        echo "🔒 VNC pass  : Bee123!!"
-        echo "📺 Display   : :1 (5901)"
-        echo "===================================="
-        {
-          echo "## ✅ Linux Desktop (noVNC)"
-          echo "**Open:** $URL"
-          echo ""
-          echo "**Password:** \`Bee123!!\`"
-          echo "_(When noVNC loads, it will prompt for the VNC password.)_"
-        } >> $GITHUB_STEP_SUMMARY
 
-    - name: Keep alive (6h)
-      run: |
-        while true; do sleep 30; done
-        curl -fsSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-amd64.zip -o ngrok.zip
-        unzip -q ngrok.zip
-        chmod +x ngrok
-        ./ngrok config add-authtoken 30ohlOfgXzLIK3qyF3zX0OWUX9E_2Vz5BaGjNd1XvG1Sn4sUF
+        HOST=$(echo "$URL" | sed 's#^tcp://##' | cut -d: -f1)
+        PORT=$(echo "$URL" | awk -F: '{print $NF}')
 
-    - name: Start ngrok (HTTP tunnel to noVNC) and fetch URL
-      run: |
-        # Start ngrok in background, log to file in logfmt (v3)
-        ./ngrok http 6080 --log=stdout --log-format=logfmt > ngrok.log 2>&1 &
-        # wait for URL to appear
-        URL=""
-        for i in {1..90}; do
-          sleep 1
-          URL=$(grep -oE 'url=https://[^ ]+' ngrok.log | tail -n1 | sed 's/url=//')
-          [ -n "$URL" ] && break
-        done
-        if [ -z "$URL" ]; then
-          echo "❌ Failed to obtain ngrok URL. Last log lines:" && tail -n 200 ngrok.log
-          exit 1
-        fi
         echo "===================================="
-        echo "✅ noVNC URL : $URL"
-        echo "👤 VNC user  : (no username)"
-        echo "🔒 VNC pass  : Bee123!!"
-        echo "📺 Display   : :1 (5901)"
+        echo "✅ SSH TUNNEL : $URL"
+        echo "👤 Username   : BeeCZ"
+        echo "🔒 Password   : Bee123!!"
+        echo "🔌 Command    : ssh -p $PORT BeeCZ@$HOST"
         echo "===================================="
+
         {
-          echo "## ✅ Linux Desktop (noVNC)"
-          echo "**Open:** $URL"
+          echo "## ✅ Linux SSH"
+          echo "**Host:** \`$HOST\`"
+          echo "**Port:** \`$PORT\`"
+          echo "**User:** \`BeeCZ\`"
+          echo "**Pass:** \`Bee123!!\`"
           echo ""
-          echo "**Password:** \`Bee123!!\`"
-          echo "_(When the noVNC page loads, it will prompt for the VNC password.)_"
+          echo "**Connect:** \`ssh -p $PORT BeeCZ@$HOST\`"
         } >> $GITHUB_STEP_SUMMARY
 
     - name: Keep alive (6h)
