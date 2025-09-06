@@ -12,24 +12,25 @@ jobs:
     - name: Install tmate
       run: |
         sudo apt-get update
-        sudo apt-get install -y tmate openssh-client
+        sudo apt-get install -y tmate
 
     - name: Start SSH session
       run: |
         echo "🔹 Starting SSH session..."
-        # Start a tmate session
-        tmate -F -v -a > tmate.log 2>&1 &
-
-        # Wait for session to start and provide the SSH command
-        sleep 5
-        cat tmate.log
-
+        # Launch a new tmate session
+        tmate -F > tmate.log 2>&1 &
+        
+        # Wait a bit for tmate to initialize
+        sleep 10
+        
         echo "========================================="
         echo "💻 Copy the SSH command below to connect:"
         echo ""
-        grep -Eo 'ssh .+' tmate.log | head -n 1
+        grep -Eo "ssh [^ ]+@[^ ]+" tmate.log | head -n 1
         echo ""
         echo "========================================="
 
-        # Keep workflow alive for 6 hours
+        echo "The SSH session will stay alive for 6 hours."
+
+        # Keep workflow alive for the full 6 hours
         sleep 21600
