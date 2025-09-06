@@ -1,4 +1,4 @@
-name: Direct SSH (GitHub Debug)
+name: Direct SSH (GitHub Debug — solid)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 jobs:
   ssh:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max
+    timeout-minutes: 360  # 6 hours
 
     steps:
     - name: Install tmate
@@ -14,23 +14,39 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y tmate
 
-    - name: Start SSH session
+    - name: Start interactive tmate session & print URLs
+      shell: bash
       run: |
-        echo "🔹 Starting SSH session..."
-        # Launch a new tmate session
-        tmate -F > tmate.log 2>&1 &
-        
-        # Wait a bit for tmate to initialize
-        sleep 10
-        
-        echo "========================================="
-        echo "💻 Copy the SSH command below to connect:"
-        echo ""
-        grep -Eo "ssh [^ ]+@[^ ]+" tmate.log | head -n 1
-        echo ""
-        echo "========================================="
+        set -euxo pipefail
 
-        echo "The SSH session will stay alive for 6 hours."
+        # Use a dedicated socket so we can manage the session reliably
+        SOCK=/tmp/tmate.sock
 
-        # Keep workflow alive for the full 6 hours
+        # Start a new detached session running a login shell
+        tmate -S "$SOCK" new-session -d -s actions "bash -l"
+
+        # Mark session as ready (tmate sets this when connection strings are available)
+        tmate -S "$SOCK" wait tmate-ready
+
+        # Grab connection strings
+        RW_SSH=$(tmate -S "$SOCK" display -p '#{tmate_ssh}')
+        RO_SSH=$(tmate -S "$SOCK" display -p '#{tmate_ssh_ro}')
+        WEB_URL=$(tmate -S "$SOCK" display -p '#{tmate_web}')
+
+        echo "============================================="
+        echo "💻 SSH (read/write): $RW_SSH"
+        echo "👀 SSH (read-only) : $RO_SSH"
+        echo "🌐 Web (browser)   : $WEB_URL"
+        echo "============================================="
+
+        {
+          echo "## ✅ Direct SSH (tmate)"
+          echo "**Read/Write SSH:** \`$RW_SSH\`"
+          echo "**Read-Only SSH:** \`$RO_SSH\`"
+          echo "**Web URL:** $WEB_URL"
+          echo ""
+          echo "_Tip: Use the **read/write** SSH link if you want to type._"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        # Keep the runner alive for 6 hours
         sleep 21600
