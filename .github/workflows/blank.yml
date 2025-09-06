@@ -1,37 +1,95 @@
-name: Infinite Windows RDP (BeeCZ + Ngrok)
+name: Windows RDP (BeeCZ + Ngrok, 6h HARDENED)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"   # reruns every 6 hours automatically
+    - cron: "0 */6 * * *"   # auto-rerun every 6 hours
 
 jobs:
-  build:
+  rdp:
     runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
-    - name: Enable RDP + Create BeeCZ user
+    - name: Enable RDP + Create user (with verification)
+      shell: pwsh
       run: |
-        net user BeeCZ Bee123!! /add
-        net localgroup administrators BeeCZ /add
-        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        $user = "BeeCZ"
+        $pass = "Bee123!!"
+        try { net user $user $pass /add } catch {}
+        try { net localgroup administrators $user /add } catch {}
+
+        # Enable RDP + disable NLA
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        New-Item -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Force | Out-Null
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+
+        # Firewall + service
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
         Set-Service -Name TermService -StartupType Automatic
         Start-Service -Name TermService
 
-    - name: Download & Setup Ngrok
+        # Wait until 3389 is actually listening
+        Write-Host "⏳ Waiting for RDP to listen on 3389..."
+        $ok=$false
+        for ($i=0;$i -lt 60;$i++){
+          if (Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -InformationLevel Quiet){ $ok=$true; break }
+          Start-Sleep -Seconds 2
+        }
+        if (-not $ok){ Write-Error "RDP (3389) not listening"; exit 1 }
+        Write-Host "✅ RDP is listening."
+
+    - name: Download & setup ngrok (v3)
+      shell: pwsh
       run: |
         Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
         Expand-Archive ngrok.zip -DestinationPath .
-        .\ngrok.exe authtoken 30ohlOfgXzLIK3qyF3zX0OWUX9E_2Vz5BaGjNd1XvG1Sn4sUF
-        Start-Process -NoNewWindow .\ngrok.exe -ArgumentList "tcp 3389"
+        .\ngrok.exe config add-authtoken 30ohlOfgXzLIK3qyF3zX0OWUX9E_2Vz5BaGjNd1XvG1Sn4sUF
 
-    - name: Show Ngrok Tunnel Info
+    - name: Start ngrok TCP 3389 (background) + extract URL from logs
+      shell: pwsh
       run: |
-        Start-Sleep -Seconds 10
-        Invoke-WebRequest http://127.0.0.1:4040/api/tunnels | Select-Object -Expand Content
+        $log = "ngrok.log"
+        if (Test-Path $log) { Remove-Item $log -Force }
+        # Start ngrok and stream logs to file
+        Start-Process -FilePath .\ngrok.exe -ArgumentList 'tcp 3389 --log=stdout --log-format=logfmt' -NoNewWindow -RedirectStandardOutput $log
 
-    - name: Keep Alive
+        # Wait up to 90s for tcp URL in logs
+        $url = $null
+        for ($i=0; $i -lt 90; $i++) {
+          Start-Sleep -Seconds 1
+          if (Test-Path $log) {
+            $line = Select-String -Path $log -Pattern 'url=tcp://[^\s"]+' -SimpleMatch:$false | Select-Object -Last 1
+            if ($line) {
+              $m = [regex]::Match($line.ToString(), 'url=(tcp://[^\s"]+)')
+              if ($m.Success) { $url = $m.Groups[1].Value; break }
+            }
+          }
+        }
+
+        if (-not $url) {
+          Write-Host "❌ Failed to obtain ngrok URL. Recent log tail:"
+          if (Test-Path $log) { Get-Content $log -Tail 200 }
+          exit 1
+        }
+
+        $host = $url.Replace('tcp://','').Split(':')[0]
+        $port = $url.Split(':')[-1]
+
+        Write-Host "====================================="
+        Write-Host "✅ RDP TUNNEL: $url"
+        Write-Host "👤 Username : BeeCZ"
+        Write-Host "🔒 Password : Bee123!!"
+        Write-Host "====================================="
+
+        # Nice summary box in Actions UI
+        "`n## ✅ RDP Tunnel
+        **Host:** $host  
+        **Port:** $port  
+        **User:** BeeCZ  
+        **Pass:** Bee123!!" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+    - name: Keep alive (6h)
+      shell: pwsh
       run: |
-        ping -t 127.0.0.1 >nul
+        while ($true) { Start-Sleep -Seconds 30 }
